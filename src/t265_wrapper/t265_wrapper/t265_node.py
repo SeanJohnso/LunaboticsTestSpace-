@@ -1,9 +1,12 @@
 """ROS 2 node for the Intel RealSense T265 (pyrealsense2 v2.50).
 
 Frames (REP-103 / REP-105):
-  odom -> base_frame (t265_link): T265 pose, x forward, y left, z up.
-  base_frame -> t265_fisheye{1,2}_optical_frame: static, from the device's
-  factory extrinsics (optical convention: x right, y down, z forward).
+  odom -> base_frame (base_link): robot pose, from the T265 pose moved through
+      the camera mount. odom's origin = base_link at start-up.
+  base_frame -> camera_frame (t265_link): static, from mount_xyz / mount_rpy.
+      camera_frame = T265 pose frame in ROS axes (x forward out of the lens, y left, z up).
+  camera_frame -> t265_fisheye{1,2}_optical_frame: static, from the device's
+      factory extrinsics (optical convention: x right, y down, z forward).
 
 The T265 itself reports in its own frame: X right, Y up, Z backward.
 """
@@ -57,6 +60,31 @@ def mat_to_quat(m):
     return ((m[k, j] - m[j, k]) / s, q[0], q[1], q[2])
 
 
+def rpy_to_mat(roll, pitch, yaw):
+    """ROS fixed-axis roll, pitch, yaw -> rotation matrix (Rz @ Ry @ Rx)."""
+    cr, sr = np.cos(roll), np.sin(roll)
+    cp, sp = np.cos(pitch), np.sin(pitch)
+    cy, sy = np.cos(yaw), np.sin(yaw)
+    return (np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+            @ np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+            @ np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]]))
+
+
+def camera_to_base(r_m, t_m, r_p, t_p, v_c, w_c):
+    """Turn the camera's motion into the robot's motion.
+
+    r_m, t_m: mount, base_link -> camera (camera pose in base_link).
+    r_p, t_p: camera pose in its start frame. v_c, w_c: camera velocities in camera axes.
+    Returns base_link pose in odom (odom = base_link at start: T = M P M^-1) and
+    base_link velocities in base_link axes (lever arm removed: v_b = R_m v_c - w_b x t_m).
+    """
+    r_b = r_m @ r_p @ r_m.T
+    t_b = r_m @ t_p + t_m - r_b @ t_m
+    w_b = r_m @ w_c
+    v_b = r_m @ v_c - np.cross(w_b, t_m)
+    return r_b, t_b, v_b, w_b
+
+
 def extrinsics_to_pose(profile, pose_profile):
     """Rotation and translation taking points in `profile`'s frame to the T265 pose frame."""
     e = profile.get_extrinsics_to(pose_profile)
@@ -69,7 +97,11 @@ class T265Node(Node):
         super().__init__('t265')
         self.serial = self.declare_parameter('serial', '').value
         self.odom_frame = self.declare_parameter('odom_frame', 'odom').value
-        self.base_frame = self.declare_parameter('base_frame', 't265_link').value
+        self.base_frame = self.declare_parameter('base_frame', 'base_link').value
+        self.camera_frame = self.declare_parameter('camera_frame', 't265_link').value
+        mount_xyz = self.declare_parameter('mount_xyz', [0.0, 0.0, 0.0]).value
+        mount_rpy = self.declare_parameter('mount_rpy', [0.0, 0.0, 0.0]).value
+        self.publish_mount_tf = self.declare_parameter('publish_mount_tf', True).value
         self.publish_tf = self.declare_parameter('publish_tf', True).value
         self.enable_imu = self.declare_parameter('enable_imu', False).value
         self.enable_fisheye = self.declare_parameter('enable_fisheye', False).value
@@ -82,8 +114,16 @@ class T265Node(Node):
         if self.enable_imu:
             self.gyro_pub = self.create_publisher(Imu, 'imu/gyro', 10)
             self.accel_pub = self.create_publisher(Imu, 'imu/accel', 10)
+        self.mount_r = rpy_to_mat(*mount_rpy)
+        self.mount_t = np.array(mount_xyz, dtype=float)
+        self.static_tf_pub = StaticTransformBroadcaster(self)
+        self.mount_tfs = []
+        if self.publish_mount_tf:
+            self.mount_tfs = [self.make_tf(
+                self.base_frame, self.camera_frame, self.mount_t,
+                mat_to_quat(self.mount_r), self.get_clock().now().to_msg())]
+            self.static_tf_pub.sendTransform(self.mount_tfs)
         if self.enable_fisheye:
-            self.static_tf_pub = StaticTransformBroadcaster(self)
             self.img_pubs = {i: self.create_publisher(Image, f'fisheye{i}/image_raw', 10)
                              for i in (1, 2)}
             self.info_pubs = {i: self.create_publisher(CameraInfo, f'fisheye{i}/camera_info', 10)
@@ -91,7 +131,7 @@ class T265Node(Node):
 
         self.pipe = None
         self.last_frame = 0.0
-        self.imu_rot = {}       # stream -> 3x3, IMU axes -> ROS body axes
+        self.imu_rot = {}       # stream -> 3x3, IMU axes -> camera_frame axes
         self.cam_info = {}      # fisheye index -> CameraInfo template
         self.lock = threading.Lock()
 
@@ -136,9 +176,10 @@ class T265Node(Node):
                 sp = profile.get_stream(rs.stream.fisheye, i)
                 self.cam_info[i] = self.make_camera_info(sp, i)
                 r, t = extrinsics_to_pose(sp, pose_profile)
-                tfs.append(self.make_tf(self.base_frame, self.optical_frame(i),
+                tfs.append(self.make_tf(self.camera_frame, self.optical_frame(i),
                                         C @ t, mat_to_quat(C @ r), self.get_clock().now().to_msg()))
-            self.static_tf_pub.sendTransform(tfs)
+            # One /tf_static message holds all static transforms, so resend the mount too.
+            self.static_tf_pub.sendTransform(self.mount_tfs + tfs)
 
     def stop_pipeline(self):
         if self.pipe is not None:
@@ -186,12 +227,14 @@ class T265Node(Node):
 
     def publish_pose(self, p, stamp):
         # Rotation T265 -> ROS: R_ros = C R C^T, i.e. quaternion vector part rotated by C.
-        q = (p.rotation.w, *(C @ [p.rotation.x, p.rotation.y, p.rotation.z]))
-        pos = C @ [p.translation.x, p.translation.y, p.translation.z]
-        r_body = quat_to_mat(*q)
-        # T265 velocities are in the odom frame; Odometry twist is in the child frame.
-        vel = r_body.T @ (C @ [p.velocity.x, p.velocity.y, p.velocity.z])
-        ang = r_body.T @ (C @ [p.angular_velocity.x, p.angular_velocity.y, p.angular_velocity.z])
+        q_cam = (p.rotation.w, *(C @ [p.rotation.x, p.rotation.y, p.rotation.z]))
+        r_cam = quat_to_mat(*q_cam)
+        t_cam = C @ [p.translation.x, p.translation.y, p.translation.z]
+        # T265 velocities are in its start frame; rotate into the camera's own axes.
+        v_cam = r_cam.T @ (C @ [p.velocity.x, p.velocity.y, p.velocity.z])
+        w_cam = r_cam.T @ (C @ [p.angular_velocity.x, p.angular_velocity.y, p.angular_velocity.z])
+        r_b, pos, vel, ang = camera_to_base(self.mount_r, self.mount_t, r_cam, t_cam, v_cam, w_cam)
+        q = mat_to_quat(r_b)
 
         conf = int(p.tracker_confidence)  # 0 failed, 1 low, 2 medium, 3 high
         cov_pose = self.pose_cov * 10.0 ** (3 - conf)
@@ -221,7 +264,7 @@ class T265Node(Node):
         v = self.imu_rot[st] @ [d.x, d.y, d.z]
         msg = Imu()
         msg.header.stamp = stamp
-        msg.header.frame_id = self.base_frame
+        msg.header.frame_id = self.camera_frame
         msg.orientation_covariance[0] = -1.0  # no orientation in raw IMU data
         if st == rs.stream.gyro:
             msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z = (

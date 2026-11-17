@@ -2,9 +2,15 @@
   ros__parameters:
     serial: ""                 # T265 serial number; empty = first T265 found
     odom_frame: odom
-    base_frame: t265_link      # T265 pose frame, ROS axes (x forward, y left, z up)
+    base_frame: base_link      # robot body; /t265/odom and the odom TF are for this frame
+    camera_frame: t265_link    # T265 pose frame, ROS axes (x out of the lens, y left, z up)
+    # Camera pose in base_frame (REP-103: x forward, y left, z up; yaw + = turn left).
+    # Current mount: 20 cm right of the robot centre, facing right.
+    mount_xyz: [0.0, -0.20, 0.0]        # metres
+    mount_rpy: [0.0, 0.0, -1.5707963]   # radians
+    publish_mount_tf: true     # static base_frame -> camera_frame; turn off once a URDF publishes it
     publish_tf: true           # odom -> base_frame; turn off when another node (e.g. robot_localization) owns it
-    enable_imu: false          # imu/gyro (200 Hz) and imu/accel (62.5 Hz), sensor_msgs/Imu in base_frame
+    enable_imu: false          # imu/gyro (200 Hz) and imu/accel (62.5 Hz), sensor_msgs/Imu in camera_frame
     enable_fisheye: false      # fisheye{1,2}/image_raw + camera_info, 848x800 mono8 at 30 Hz (heavy over Wi-Fi)
     pose_covariance: 0.01      # base variance, scaled by 10^(3 - tracker_confidence)
     twist_covariance: 0.01     # base variance, scaled by 10^(1 - tracker_confidence)
