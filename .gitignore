@@ -1,0 +1,16 @@
+# Claude Code project instructions (kept local, not shared)
+CLAUDE.md
+.claude/
+
+# Recorded sensor data
+/data/
+
+# colcon build outputs
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
