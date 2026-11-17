@@ -167,13 +167,13 @@ class T265Node(Node):
             if frame.is_frameset():
                 fs = frame.as_frameset()
                 for k in range(fs.size()):
-                    self.handle(fs[k], stamp)
+                    self.handle_frame(fs[k], stamp)
             else:
-                self.handle(frame, stamp)
+                self.handle_frame(frame, stamp)
         except Exception as e:  # never let one bad frame kill the callback thread
             self.get_logger().error(f'frame handling failed: {e}', throttle_duration_sec=5.0)
 
-    def handle(self, f, stamp):
+    def handle_frame(self, f, stamp):  # not `handle`: that is rclpy Node's own attribute
         sp = f.get_profile()
         st = sp.stream_type()
         if st == rs.stream.pose:

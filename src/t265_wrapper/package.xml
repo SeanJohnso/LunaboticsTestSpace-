@@ -16,6 +16,7 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>rviz2</exec_depend>
   <!-- pyrealsense2 v2.50 is not a rosdep key: it comes from ~/t265_project/install (see launch file). -->
 
   <export>

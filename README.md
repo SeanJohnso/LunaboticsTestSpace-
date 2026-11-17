@@ -32,4 +32,14 @@ Frames follow REP-103/105: `odom` → `t265_link` (x forward, y left, z up). Set
 | `/t265/fisheye{1,2}/image_raw`, `.../camera_info` | `Image` mono8 848×800, `CameraInfo` (`equidistant`) | 30 Hz | `enable_fisheye: true` |
 | `/tf_static` `t265_link` → `t265_fisheye{1,2}_optical_frame` | | once | `enable_fisheye: true` |
 
+### RViz (dev machine)
+
+Build the package on the dev machine too (pure Python, works on Humble), then with `t265.launch.py` running on the Pi:
+
+```bash
+ros2 launch t265_wrapper t265_rviz.launch.py
+```
+
+Shows `/t265/odom` (arrow trail, fixed frame `odom`) and TF. From a VS Code terminal (snap) RViz crashes with `libpthread.so.0: undefined symbol: __libc_pthread_init`; use a normal terminal, or `unset GTK_PATH GIO_MODULE_DIR LOCPATH` first.
+
 Odometry covariance follows tracker confidence: pose `pose_covariance × 10^(3−conf)`, twist `twist_covariance × 10^(1−conf)`.
